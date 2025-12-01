@@ -7,7 +7,18 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-from avantes_client import AvantesSpectrometer
+# ------------------------------------------------
+# Donanım kullanılabilir mi? (lokal vs. cloud ayırma)
+# ------------------------------------------------
+try:
+    from avantes_client import AvantesSpectrometer
+    HW_AVAILABLE = True
+    IMPORT_ERROR = None
+except Exception as e:
+    # Streamlit Cloud gibi ortamlarda avaspec import'u libavs.so.0 yüzünden patlar
+    HW_AVAILABLE = False
+    AvantesSpectrometer = None
+    IMPORT_ERROR = e
 
 
 # ------------------------------------------------
@@ -23,7 +34,7 @@ st.set_page_config(
 # Session state başlatma
 # ------------------------------------------------
 if "spectrometer" not in st.session_state:
-    st.session_state.spectrometer = AvantesSpectrometer()
+    st.session_state.spectrometer = AvantesSpectrometer() if HW_AVAILABLE else None
     st.session_state.connected = False
     st.session_state.wavelengths = None
     st.session_state.last_spectrum = None
@@ -35,6 +46,17 @@ if "active_menu" not in st.session_state:
 
 if "active_analysis" not in st.session_state:
     st.session_state.active_analysis = "PCA"
+
+
+# ------------------------------------------------
+# Cloud ortamında donanımın kapalı olduğuna dair uyarı
+# ------------------------------------------------
+if not HW_AVAILABLE:
+    st.warning(
+        "Bu ortamda (Streamlit Cloud vb.) Avantes donanım kütüphanesi yüklenemedi. "
+        "Spektrum ölçümü ve cihaza bağlanma **yalnızca lokal Windows PC üzerinde** çalışacaktır. "
+        "Burada arayüz ve analiz menülerini test edebilirsin."
+    )
 
 
 # ------------------------------------------------
@@ -142,7 +164,7 @@ elif st.session_state.active_menu == "Analiz":
             )
         elif analysis_option == "Sınıflandırma – Gelişmiş":
             st.info(
-                "Daha gelişmiş sınıflandırıcılar (SVM, Random Forest, belki basit bir sinir ağı) "
+                "Daha gelişmiş sınıflandırıcılar (SVM, Random Forest, basit NN) "
                 "bu bölümde yer alacak."
             )
 
@@ -150,6 +172,8 @@ elif st.session_state.active_menu == "Yardım":
     with st.expander("Yardım ve Hakkında", expanded=False):
         st.write("Bu yazılım Günhan OSTİM & OSTİM Teknik Üniversitesi işbirliği ile geliştirilmektedir.")
         st.write("Versiyon: V1 – Avantes Streamlit prototip")
+        if IMPORT_ERROR is not None:
+            st.write(f"Donanım import hatası (teknik bilgi): {IMPORT_ERROR}")
         st.write("Geri bildirimler için: Ar-Ge ekibi")
 
 
@@ -167,26 +191,33 @@ with left_panel:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔌 Cihaza Bağlan"):
-            try:
-                st.session_state.spectrometer.connect()
-                st.session_state.connected = True
-                st.session_state.wavelengths = st.session_state.spectrometer.get_wavelengths()
-                st.success("Spektrometreye bağlantı başarılı.")
-            except Exception as e:
-                st.session_state.connected = False
-                st.error(f"Bağlantı hatası: {e}")
+            if not HW_AVAILABLE:
+                st.error(
+                    "Bu ortamda Avantes kütüphanesi yüklü değil. "
+                    "Cihaza bağlanma yalnızca lokal Windows kurulumunda mümkündür."
+                )
+            else:
+                try:
+                    st.session_state.spectrometer.connect()
+                    st.session_state.connected = True
+                    st.session_state.wavelengths = st.session_state.spectrometer.get_wavelengths()
+                    st.success("Spektrometreye bağlantı başarılı.")
+                except Exception as e:
+                    st.session_state.connected = False
+                    st.error(f"Bağlantı hatası: {e}")
 
     with col2:
         if st.button("❌ Bağlantıyı Kes"):
-            try:
-                st.session_state.spectrometer.disconnect()
-                st.session_state.connected = False
-                st.session_state.last_spectrum = None
-                st.session_state.measure_count = 0
-                st.session_state.last_temperature = None
-                st.info("Bağlantı kapatıldı.")
-            except Exception as e:
-                st.error(f"Bağlantı kapatılırken hata: {e}")
+            if st.session_state.spectrometer is not None:
+                try:
+                    st.session_state.spectrometer.disconnect()
+                except Exception as e:
+                    st.error(f"Bağlantı kapatılırken hata: {e}")
+            st.session_state.connected = False
+            st.session_state.last_spectrum = None
+            st.session_state.measure_count = 0
+            st.session_state.last_temperature = None
+            st.info("Bağlantı kapatıldı / sıfırlandı.")
 
     st.markdown("---")
 
@@ -218,7 +249,7 @@ with left_panel:
 
     st.markdown("---")
 
-    # Üst bilgi paneli (bağlı mı, ölçüm sayısı, sıcaklık)
+    # Durum özeti
     st.markdown("**Durum Özeti**")
     st.write(
         f"• **Bağlantı durumu:** "
@@ -232,7 +263,7 @@ with left_panel:
 
     st.markdown("---")
 
-    if st.session_state.connected:
+    if st.session_state.connected and HW_AVAILABLE:
         if st.button("📷 Tek Spektrum Ölç", use_container_width=True):
             try:
                 spectrum = st.session_state.spectrometer.single_measure(
@@ -243,7 +274,7 @@ with left_panel:
                 st.session_state.last_spectrum = spectrum
                 st.session_state.measure_count += 1
 
-                # Sıcaklık okumaya çalış
+                # Sıcaklık
                 try:
                     temp = st.session_state.spectrometer.get_temperature(port_id=0)
                     st.session_state.last_temperature = temp
@@ -253,7 +284,10 @@ with left_panel:
             except Exception as e:
                 st.error(f"Ölçüm sırasında hata: {e}")
     else:
-        st.info("Ölçüm almak için önce cihaza bağlanın.")
+        if HW_AVAILABLE:
+            st.info("Ölçüm almak için önce cihaza bağlanın.")
+        else:
+            st.info("Bu ortamda ölçüm fonksiyonları devre dışı (donanım yok).")
 
 
 # ------------------------------------------------
@@ -262,11 +296,13 @@ with left_panel:
 with right_panel:
     st.subheader("Spektrum Görüntüleme")
 
-    if st.session_state.last_spectrum is not None and st.session_state.wavelengths is not None:
+    if (
+        st.session_state.last_spectrum is not None
+        and st.session_state.wavelengths is not None
+    ):
         lam = st.session_state.wavelengths
         spec = st.session_state.last_spectrum
 
-        # Daha geniş grafik alanı
         fig, ax = plt.subplots(figsize=(11, 5))
         ax.plot(lam, spec)
         ax.set_xlabel("Dalgaboyu (nm)")
@@ -275,14 +311,12 @@ with right_panel:
         ax.grid(True, alpha=0.3)
         st.pyplot(fig, use_container_width=True)
 
-        # Bilgi
         st.write(f"Piksel sayısı: {len(spec)}")
         if isinstance(lam, np.ndarray) and lam.size > 1:
             st.write(f"Dalgaboyu aralığı: {lam[0]:.1f} nm – {lam[-1]:.1f} nm")
         else:
             st.write("Dalgaboyu bilgisi alınamadı.")
 
-        # CSV indirme
         df = pd.DataFrame({
             "wavelength_nm": lam,
             "intensity": spec,
@@ -296,4 +330,4 @@ with right_panel:
             use_container_width=True,
         )
     else:
-        st.info("Henüz gösterilecek bir spektrum yok. Soldan ölçüm alarak başlayın.")
+        st.info("Henüz gösterilecek bir spektrum yok. Soldan ölçüm alarak başlayın (lokal kurulum).")
